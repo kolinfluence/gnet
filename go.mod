@@ -1,4 +1,4 @@
-module github.com/luyu6056/gnet
+module github.com/kolinfluence/gnet
 
 go 1.20
 
