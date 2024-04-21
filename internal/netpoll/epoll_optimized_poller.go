@@ -25,9 +25,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/luyu6056/gnet/internal/queue"
-	"github.com/luyu6056/gnet/pkg/errors"
-	"github.com/luyu6056/gnet/pkg/logging"
+	"github.com/kolinfluence/gnet/internal/queue"
+	"github.com/kolinfluence/gnet/pkg/errors"
+	"github.com/kolinfluence/gnet/pkg/logging"
 )
 
 // Poller represents a poller which is in charge of monitoring file-descriptors.
