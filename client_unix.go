@@ -10,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/luyu6056/gnet/internal/netpoll"
+	"github.com/kolinfluence/gnet/internal/netpoll"
 	"golang.org/x/sys/unix"
 )
 
