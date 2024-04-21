@@ -363,12 +363,12 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 	if srv.opts.ReusePort {
 		
 	log.Printf("LLXXLLLL = %d", srv.ln.fd)
-		err := unix.SetsockoptInt(int(srv.ln.fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		err := syscall.SetsockoptInt(int(srv.ln.fd), syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 		if err != nil {
 			return err
 		}
 
-		err = unix.SetsockoptInt(int(srv.ln.fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		err = syscall.SetsockoptInt(int(srv.ln.fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 		if err != nil {
 			return err
 		}
