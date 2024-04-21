@@ -22,10 +22,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/luyu6056/gnet/pkg/errors"
+	"github.com/kolinfluence/gnet/pkg/errors"
 
-	"github.com/luyu6056/gnet/internal/netpoll"
-	"github.com/luyu6056/tls"
+	"github.com/kolinfluence/gnet/internal/netpoll"
+	"github.com/kolinfluence/tls"
 	"golang.org/x/sys/unix"
 )
 
