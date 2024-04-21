@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/luyu6056/gnet/internal/netpoll"
-	"github.com/luyu6056/gnet/internal/socket"
-	"github.com/luyu6056/gnet/pkg/pool/byteslice"
+	"github.com/kolinfluence/gnet/internal/netpoll"
+	"github.com/kolinfluence/gnet/internal/socket"
+	"github.com/kolinfluence/gnet/pkg/pool/byteslice"
 
 	"github.com/luyu6056/tls"
 	"golang.org/x/sys/unix"
