@@ -13,11 +13,11 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/luyu6056/gnet/pkg/errors"
+	"github.com/kolinfluence/gnet/pkg/errors"
 
-	"github.com/luyu6056/gnet/internal/socket"
+	"github.com/kolinfluence/gnet/internal/socket"
 
-	"github.com/luyu6056/gnet/internal/netpoll"
+	"github.com/kolinfluence/gnet/internal/netpoll"
 	"golang.org/x/sys/unix"
 )
 
