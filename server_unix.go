@@ -9,6 +9,7 @@
 package gnet
 
 import (
+	"context"  // Make sure context is imported
 	"flag"
 	"io/ioutil"
 	"log"
