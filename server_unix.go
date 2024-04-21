@@ -22,7 +22,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-    	"errors"  // Import the built-in errors package
 	
 	"github.com/kolinfluence/gnet/pkg/errors"
 	"github.com/kolinfluence/gnet/internal/netpoll"
