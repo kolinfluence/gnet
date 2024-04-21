@@ -237,158 +237,81 @@ func (srv *server) stop() {
 // tcp平滑重启，开启ReusePort有效，关闭ReusePort则会造成短暂的错误
 
 func serve(eventHandler EventHandler, addr string, options *Options) error {
+	// Create new server instance
 	srv := new(server)
 	srv.connWg = new(sync.WaitGroup)
-	var ln listener
-	//efer ln.close()
 
-	ln.network, ln.addr = parseAddr(addr)
-	if len(ln.network) >= 4 && ln.network[:4] == "unix" {
-		sniffError(os.RemoveAll(ln.addr))
-	}
-	var (
-		reload, graceful, stop bool
-	)
-	if options.Graceful {
-		flag.BoolVar(&reload, "reload", false, "listen on fd open 3 (internal use only)")
-		flag.BoolVar(&graceful, "graceful", false, "listen on fd open 3 (internal use only)")
-		flag.BoolVar(&stop, "stop", false, "stop the server from pid")
+	// Parse network and address
+	ln := listener{
+		network: parseNetwork(addr),
+		addr:    parseAddress(addr),
 	}
 
-	var err error
-	if ln.network == "udp" {
-		ln.pconn, err = net.ListenPacket(ln.network, ln.addr)
-	} else {
-		flag.Parse()
-		if stop {
-			b, err := ioutil.ReadFile("./" + options.PidName)
-			if err == nil {
-				pidstr := string(b)
-				pid, err := strconv.Atoi(pidstr)
-				if err == nil {
-					if err = syscall.Kill(pid, syscall.SIGTERM); err == nil {
-						log.Println("stop server ok")
-						return nil
-					}
-				}
-			}
-			log.Println("stop server fail or server not start")
-			return nil
-		}
-		if reload {
-			b, err := ioutil.ReadFile("./" + options.PidName)
-			if err == nil {
-				pidstr := string(b)
-				pid, err := strconv.Atoi(pidstr)
-				if err == nil {
-					if err = syscall.Kill(pid, syscall.SIGUSR1); err == nil {
-						log.Println("reload ok")
-						return nil
-					} else {
-						log.Println("server not start")
-						return nil
-					}
-				} else {
-					log.Println("server not start")
-					return nil
-				}
-			}
-		}
-		if graceful {
-			f := os.NewFile(3, "")
-			ln.ln, err = net.FileListener(f)
-			f.Close()
-		} else {
-			ln.ln, err = net.Listen(ln.network, ln.addr)
-		}
-
-		if err == nil {
-			pid := unix.Getpid()
-			f, err := os.OpenFile("./"+options.PidName, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644)
-			if err != nil {
-				return err
-			}
-			f.WriteString(strconv.Itoa(int(pid)))
-			f.Close()
-			if options.Graceful {
-				go srv.signalHandler()
-			}
-		}
-
+	// Configure listener with socket options
+	listenCfg := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			})
+		},
 	}
+
+	// Create the listener using ListenConfig
+	listener, err := listenCfg.Listen(context.Background(), ln.network, ln.addr)
 	if err != nil {
+		log.Printf("Failed to listen on %s: %v", ln.addr, err)
 		return err
 	}
-	if ln.pconn != nil {
-		ln.lnaddr = ln.pconn.LocalAddr()
-	} else {
-		ln.lnaddr = ln.ln.Addr()
-	}
-	if err := ln.system(); err != nil {
-		return err
-	}
-	// Figure out the correct number of loops/goroutines to use.
-	numCPU := options.LoopNum
-	if numCPU <= 0 {
-		numCPU = runtime.NumCPU()
-	}
-	srv.close = make(chan bool, 1)
+	defer listener.Close()
+	log.Printf("Listening on %s", listener.Addr().String())
+	srv.ln = &ln
+	srv.ln.ln = listener
 
+	// Handle flags for graceful reload or stop
+	flag.Parse()
+	if flag.Lookup("stop") != nil && flag.Lookup("stop").Value.(flag.Getter).Get().(bool) {
+		return handleStop(options)
+	}
+	if flag.Lookup("reload") != nil && flag.Lookup("reload").Value.(flag.Getter).Get().(bool) {
+		return handleReload(options)
+	}
+
+	// Continue setup for your server
 	srv.opts = options
 	srv.tlsconfig = options.Tlsconfig
 	srv.eventHandler = eventHandler
-	srv.ln = &ln
 	srv.subLoopGroup = new(eventLoopGroup)
 	srv.cond = sync.NewCond(&sync.Mutex{})
 	srv.ticktock = make(chan time.Duration, 1)
 	srv.Isblock = options.Isblock
-	srv.codec = func() ICodec {
-		if options.Codec == nil {
-			return new(BuiltInFrameCodec)
-		}
-		return options.Codec
-	}()
+	srv.codec = getDefaultCodec(options)
+
+	// Determine the number of loops or goroutines
+	numCPU := determineCPU(options)
 
 	server := Server{
 		Multicore:    numCPU > 1,
-		Addr:         ln.lnaddr,
+		Addr:         listener.Addr().String(),
 		NumEventLoop: numCPU,
-		ReUsePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
-		Close: func() {
-			srv.close <- true
-		},
+		Close:        func() { srv.close <- true },
 	}
-	log.Printf("LLLLLL")
-	if srv.opts.ReusePort {
-		
-	log.Printf("LLXXLLLL = %d", srv.ln.fd)
-		err := syscall.SetsockoptInt(int(srv.ln.fd), syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-		if err != nil {
-			return err
-		}
 
-		err = syscall.SetsockoptInt(int(srv.ln.fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-		if err != nil {
-			return err
-		}
-	}
-	switch srv.eventHandler.OnInitComplete(server) {
-	case None:
-	case Shutdown:
+	if srv.eventHandler.OnInitComplete(server) == Shutdown {
 		return nil
 	}
 
 	if err := srv.start(numCPU); err != nil {
 		srv.closeLoops()
-		log.Printf("gnet server is stoping with error: %v\n", err)
+		log.Printf("Server is stopping with error: %v", err)
 		return err
 	}
 
 	srv.waitForShutdown()
-
 	return nil
 }
+
 func (srv *server) signalHandler() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
