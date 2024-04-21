@@ -186,36 +186,33 @@ func (srv *server) start(numCPU int) error {
 }
 
 func (srv *server) activateLoops(numLoops int) error {
-    if srv.subLoopGroup == nil {
-        srv.subLoopGroup = newEventLoopGroup() // Ensure subLoopGroup is initialized
-    }
-    
-    for i := 0; i < numLoops; i++ {
-        p, err := netpoll.OpenPoller()
-        if err != nil {
-            return err
-        }
-        el := &eventloop{
-            idx:          i,
-            srv:          srv,
-            codec:        srv.codec,
-            poller:       p,
-            packet:       make([]byte, 0xFFFF),
-            eventHandler: srv.eventHandler,
-        }
+	// Create loops locally and bind the listeners.
 
-        el.pollAttachment = netpoll.GetPollAttachment()
-        el.pollAttachment.FD = srv.ln.fd
-        el.pollAttachment.Callback = el.handleEvent
-        if err := el.poller.AddRead(el.pollAttachment); err != nil {
-            return err
-        }
-        srv.subLoopGroup.register(el)
-    }
+	for i := 0; i < numLoops; i++ {
+		if p, err := netpoll.OpenPoller(); err == nil {
+			el := &eventloop{
+				idx:          i,
+				srv:          srv,
+				codec:        srv.codec,
+				poller:       p,
+				packet:       make([]byte, 0xFFFF),
+				eventHandler: srv.eventHandler,
+			}
 
-    srv.subLoopGroupSize = srv.subLoopGroup.len()
-    srv.startLoops()
-    return nil
+			el.pollAttachment = netpoll.GetPollAttachment()
+			el.pollAttachment.FD = srv.ln.fd
+			el.pollAttachment.Callback = el.handleEvent
+			_ = el.poller.AddRead(el.pollAttachment)
+			srv.subLoopGroup.register(el)
+		} else {
+			return err
+		}
+	}
+
+	srv.subLoopGroupSize = srv.subLoopGroup.len()
+	// Start loops in background
+	srv.startLoops()
+	return nil
 }
 
 
