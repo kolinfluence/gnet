@@ -174,15 +174,12 @@ func (srv *server) activateMainReactorCallback(fd int) error {
 	return srv.acceptNewConnection(fd)
 }
 
+
 func (srv *server) start(numCPU int) error {
-    // Check if necessary components are initialized
-    if srv.ln == nil || srv.ln.fd == 0 {
-        return errors.New("listener or listener fd is nil")
-    }
-    if srv.opts.ReusePort || srv.ln.pconn != nil {
-        return srv.activateLoops(numCPU)
-    }
-    return srv.activateReactors(numCPU)
+//	if srv.opts.ReusePort || srv.ln.pconn != nil {
+		return srv.activateLoops(numCPU)
+//	}
+//	return srv.activateReactors(numCPU)
 }
 
 func (srv *server) activateLoops(numLoops int) error {
