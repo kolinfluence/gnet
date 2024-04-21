@@ -359,7 +359,10 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 			srv.close <- true
 		},
 	}
+	log.Printf("LLLLLL")
 	if srv.opts.ReusePort {
+		
+	log.Printf("LLXXLLLL")
 		err := unix.SetsockoptInt(srv.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 		if err != nil {
 			return err
