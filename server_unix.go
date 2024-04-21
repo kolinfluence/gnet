@@ -240,59 +240,134 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
     srv := new(server)
     srv.connWg = new(sync.WaitGroup)
     var ln listener
+
     ln.network, ln.addr = parseAddr(addr)
-
-    listenCfg := net.ListenConfig{
-        Control: func(network, address string, c syscall.RawConn) error {
-            return c.Control(func(fd uintptr) {
-                if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
-                    log.Printf("Failed to set SO_REUSEADDR: %v", err)
-                }
-                if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
-                    log.Printf("Failed to set SO_REUSEPORT: %v", err)
-                }
-            })
-        },
+    if len(ln.network) >= 4 && ln.network[:4] == "unix" {
+        sniffError(os.RemoveAll(ln.addr))
     }
 
-    listener, err := listenCfg.Listen(context.Background(), "tcp", ln.addr)
-    if err != nil {
-        log.Printf("Failed to listen on %s: %v", ln.addr, err)
-        return err
-    }
-    defer listener.Close()
-    log.Printf("Listening on %s", listener.Addr().String())
-
-    srv.ln = &ln
-    srv.ln.ln = listener
-
-    var reload, graceful, stop bool
+    var (
+        reload, graceful, stop bool
+    )
     if options.Graceful {
         flag.BoolVar(&reload, "reload", false, "listen on fd open 3 (internal use only)")
         flag.BoolVar(&graceful, "graceful", false, "listen on fd open 3 (internal use only)")
         flag.BoolVar(&stop, "stop", false, "stop the server from pid")
-        flag.Parse()
     }
 
+    flag.Parse()
     if stop {
-        handleStop(options.PidName)
-        return nil  // Adjust to not return error here
-    }
-    if reload {
-        handleReload(options.PidName)
-        return nil  // Adjust to not return error here
+        b, err := ioutil.ReadFile("./" + options.PidName)
+        if err == nil {
+            pidstr := string(b)
+            pid, err := strconv.Atoi(pidstr)
+            if err == nil {
+                if err = syscall.Kill(pid, syscall.SIGTERM); err == nil {
+                    log.Println("stop server ok")
+                    return nil
+                }
+            }
+        }
+        log.Println("stop server fail or server not start")
+        return nil
     }
 
-    // Correcting the srv.start call to pass a proper integer (Number of CPUs)
-    numCPU := runtime.NumCPU()  // reintroduce runtime appropriately if needed elsewhere
-    if err := srv.start(numCPU); err != nil {
-        log.Printf("Server start failed: %v", err)
+    if reload {
+        b, err := ioutil.ReadFile("./" + options.PidName)
+        if err == nil {
+            pidstr := string(b)
+            pid, err := strconv.Atoi(pidstr)
+            if err == nil {
+                if err = syscall.Kill(pid, syscall.SIGUSR1); err == nil {
+                    log.Println("reload ok")
+                    return nil
+                } else {
+                    log.Println("server not start")
+                    return nil
+                }
+            } else {
+                log.Println("server not start")
+                return nil
+            }
+        }
+    }
+
+    var err error
+    if graceful {
+        f := os.NewFile(3, "")
+        ln.ln, err = net.FileListener(f)
+        f.Close()
+    } else {
+        ln.ln, err = net.Listen(ln.network, ln.addr)
+        if err == nil && options.ReusePort {
+            // Set SO_REUSEPORT immediately upon listening
+            tcpLn, ok := ln.ln.(*net.TCPListener)
+            if ok {
+                file, err := tcpLn.File()
+                if err == nil {
+                    fd := int(file.Fd())
+                    err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+                    file.Close()
+                    if err != nil {
+                        return err
+                    }
+                } else {
+                    return err
+                }
+            }
+        }
+    }
+
+    if err != nil {
+        return err
+    }
+
+    // Update server configurations
+    srv.opts = options
+    srv.tlsconfig = options.Tlsconfig
+    srv.eventHandler = eventHandler
+    srv.ln = &ln
+    srv.subLoopGroup = new(eventLoopGroup)
+    srv.cond = sync.NewCond(&sync.Mutex{})
+    srv.ticktock = make(chan time.Duration, 1)
+    srv.Isblock = options.Isblock
+    srv.codec = func() ICodec {
+        if options.Codec == nil {
+            return new(BuiltInFrameCodec)
+        }
+        return options.Codec
+    }()
+    
+    server := Server{
+        Multicore:    runtime.NumCPU() > 1,
+        Addr:         ln.ln.Addr(),
+        NumEventLoop: runtime.NumCPU(),
+        ReUsePort:    options.ReusePort,
+        TCPKeepAlive: options.TCPKeepAlive,
+        Close: func() {
+            srv.close <- true
+        },
+    }
+    
+    log.Printf("Server configuration completed")
+
+    switch srv.eventHandler.OnInitComplete(server) {
+    case None:
+    case Shutdown:
+        return nil
+    }
+
+    if err := srv.start(runtime.NumCPU()); err != nil {
+        srv.closeLoops()
+        log.Printf("gnet server is stopping with error: %v\n", err)
         return err
     }
 
     srv.waitForShutdown()
+
     return nil
 }
+
 
 func handleStop(pidName string) {
     b, err := ioutil.ReadFile("./" + pidName)
