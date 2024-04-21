@@ -25,7 +25,7 @@ import (
 	"github.com/kolinfluence/gnet/pkg/errors"
 
 	"github.com/kolinfluence/gnet/internal/netpoll"
-	"github.com/kolinfluence/tls"
+	"github.com/luyu6056/tls"
 	"golang.org/x/sys/unix"
 )
 
