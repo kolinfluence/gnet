@@ -284,7 +284,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
         f.Close()
     } else {
         if options.ReusePort {
-            ln.ln, err = net.Listen(ln.network, ln.addr+"?reuseport=true")
+            ln.ln, err = net.Listen(ln.network, ln.addr)
         } else {
             ln.ln, err = net.Listen(ln.network, ln.addr)
         }
