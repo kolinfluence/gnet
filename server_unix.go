@@ -21,8 +21,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	
+
 	"github.com/kolinfluence/gnet/pkg/errors"
+
 	"github.com/kolinfluence/gnet/internal/netpoll"
 	"github.com/luyu6056/tls"
 	"golang.org/x/sys/unix"
@@ -122,6 +123,36 @@ func (srv *server) startReactors() {
 	})
 }
 
+func (srv *server) activateLoops(numLoops int) error {
+	// Create loops locally and bind the listeners.
+
+	for i := 0; i < numLoops; i++ {
+		if p, err := netpoll.OpenPoller(); err == nil {
+			el := &eventloop{
+				idx:          i,
+				srv:          srv,
+				codec:        srv.codec,
+				poller:       p,
+				packet:       make([]byte, 0xFFFF),
+				eventHandler: srv.eventHandler,
+			}
+
+			el.pollAttachment = netpoll.GetPollAttachment()
+			el.pollAttachment.FD = srv.ln.fd
+			el.pollAttachment.Callback = el.handleEvent
+			_ = el.poller.AddRead(el.pollAttachment)
+			srv.subLoopGroup.register(el)
+		} else {
+			return err
+		}
+	}
+
+	srv.subLoopGroupSize = srv.subLoopGroup.len()
+	// Start loops in background
+	srv.startLoops()
+	return nil
+}
+
 func (srv *server) activateReactors(numLoops int) error {
 	if p, err := netpoll.OpenPoller(); err == nil {
 		el := &eventloop{
@@ -172,44 +203,12 @@ func (srv *server) activateMainReactorCallback(fd int) error {
 	return srv.acceptNewConnection(fd)
 }
 
-
 func (srv *server) start(numCPU int) error {
-//	if srv.opts.ReusePort || srv.ln.pconn != nil {
+	if srv.opts.ReusePort || srv.ln.pconn != nil {
 		return srv.activateLoops(numCPU)
-//	}
-//	return srv.activateReactors(numCPU)
-}
-
-func (srv *server) activateLoops(numLoops int) error {
-	// Create loops locally and bind the listeners.
-
-	for i := 0; i < numLoops; i++ {
-		if p, err := netpoll.OpenPoller(); err == nil {
-			el := &eventloop{
-				idx:          i,
-				srv:          srv,
-				codec:        srv.codec,
-				poller:       p,
-				packet:       make([]byte, 0xFFFF),
-				eventHandler: srv.eventHandler,
-			}
-
-			el.pollAttachment = netpoll.GetPollAttachment()
-			el.pollAttachment.FD = srv.ln.fd
-			el.pollAttachment.Callback = el.handleEvent
-			_ = el.poller.AddRead(el.pollAttachment)
-			srv.subLoopGroup.register(el)
-		} else {
-			return err
-		}
 	}
-
-	srv.subLoopGroupSize = srv.subLoopGroup.len()
-	// Start loops in background
-	srv.startLoops()
-	return nil
+	return srv.activateReactors(numCPU)
 }
-
 
 func (srv *server) stop() {
 	srv.waitClose()
@@ -235,6 +234,7 @@ func (srv *server) stop() {
 	}
 }
 
+// tcp平滑重启，开启ReusePort有效，关闭ReusePort则会造成短暂的错误
 func serve(eventHandler EventHandler, addr string, options *Options) error {
     srv := new(server)
     srv.connWg = new(sync.WaitGroup)
@@ -244,7 +244,6 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
     if len(ln.network) >= 4 && ln.network[:4] == "unix" {
         sniffError(os.RemoveAll(ln.addr))
     }
-
     var (
         reload, graceful, stop bool
     )
@@ -254,74 +253,64 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
         flag.BoolVar(&stop, "stop", false, "stop the server from pid")
     }
 
+    var err error
     flag.Parse()
     if stop {
-        b, err := ioutil.ReadFile("./" + options.PidName)
+        pid, err := readPidFile(options.PidName)
         if err == nil {
-            pidstr := string(b)
-            pid, err := strconv.Atoi(pidstr)
-            if err == nil {
-                if err = syscall.Kill(pid, syscall.SIGTERM); err == nil {
-                    log.Println("stop server ok")
-                    return nil
-                }
+            if err = syscall.Kill(pid, syscall.SIGTERM); err == nil {
+                log.Println("stop server ok")
+                return nil
             }
         }
         log.Println("stop server fail or server not start")
         return nil
     }
-
     if reload {
-        b, err := ioutil.ReadFile("./" + options.PidName)
+        pid, err := readPidFile(options.PidName)
         if err == nil {
-            pidstr := string(b)
-            pid, err := strconv.Atoi(pidstr)
-            if err == nil {
-                if err = syscall.Kill(pid, syscall.SIGUSR1); err == nil {
-                    log.Println("reload ok")
-                    return nil
-                } else {
-                    log.Println("server not start")
-                    return nil
-                }
+            if err = syscall.Kill(pid, syscall.SIGUSR1); err == nil {
+                log.Println("reload ok")
+                return nil
             } else {
                 log.Println("server not start")
                 return nil
             }
         }
     }
-
-    var err error
     if graceful {
         f := os.NewFile(3, "")
         ln.ln, err = net.FileListener(f)
         f.Close()
     } else {
-        ln.ln, err = net.Listen(ln.network, ln.addr)
-        if err == nil && options.ReusePort {
-            // Set SO_REUSEPORT immediately upon listening
-            tcpLn, ok := ln.ln.(*net.TCPListener)
-            if ok {
-                file, err := tcpLn.File()
-                if err == nil {
-                    fd := int(file.Fd())
-                    err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-                    file.Close()
-                    if err != nil {
-                        return err
-                    }
-                } else {
-                    return err
-                }
-            }
+        if options.ReusePort {
+            ln.ln, err = net.Listen(ln.network, ln.addr+"?reuseport=true")
+        } else {
+            ln.ln, err = net.Listen(ln.network, ln.addr)
         }
     }
-
     if err != nil {
         return err
     }
+    pid := unix.Getpid()
+    if err := os.WriteFile("./"+options.PidName, []byte(strconv.Itoa(int(pid))), 0644); err != nil {
+        return err
+    }
+    if options.Graceful {
+        go srv.signalHandler()
+    }
 
-    // Update server configurations
+    ln.lnaddr = ln.ln.Addr()
+
+    if err := ln.system(); err != nil {
+        return err
+    }
+    numCPU := options.LoopNum
+    if numCPU <= 0 {
+        numCPU = runtime.NumCPU()
+    }
+    srv.close = make(chan bool, 1)
+
     srv.opts = options
     srv.tlsconfig = options.Tlsconfig
     srv.eventHandler = eventHandler
@@ -336,19 +325,17 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
         }
         return options.Codec
     }()
-    
+
     server := Server{
-        Multicore:    runtime.NumCPU() > 1,
-        Addr:         ln.ln.Addr(),
-        NumEventLoop: runtime.NumCPU(),
+        Multicore:    numCPU > 1,
+        Addr:         ln.lnaddr,
+        NumEventLoop: numCPU,
         ReUsePort:    options.ReusePort,
         TCPKeepAlive: options.TCPKeepAlive,
         Close: func() {
             srv.close <- true
         },
     }
-    
-    log.Printf("Server configuration completed")
 
     switch srv.eventHandler.OnInitComplete(server) {
     case None:
@@ -356,7 +343,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
         return nil
     }
 
-    if err := srv.start(runtime.NumCPU()); err != nil {
+    if err := srv.start(numCPU); err != nil {
         srv.closeLoops()
         log.Printf("gnet server is stopping with error: %v\n", err)
         return err
@@ -367,41 +354,17 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
     return nil
 }
 
-
-func handleStop(pidName string) {
+func readPidFile(pidName string) (int, error) {
     b, err := ioutil.ReadFile("./" + pidName)
     if err != nil {
-        log.Println("Failed to read PID file:", err)
-        return
+        return 0, err
     }
-    pid, err := strconv.Atoi(string(b))
+    pidstr := string(b)
+    pid, err := strconv.Atoi(pidstr)
     if err != nil {
-        log.Println("Invalid PID:", err)
-        return
+        return 0, err
     }
-    if err = syscall.Kill(pid, syscall.SIGTERM); err != nil {
-        log.Println("Failed to stop server:", err)
-    } else {
-        log.Println("Server stopped successfully")
-    }
-}
-
-func handleReload(pidName string) {
-    b, err := ioutil.ReadFile("./" + pidName)
-    if err != nil {
-        log.Println("Failed to read PID file for reload:", err)
-        return
-    }
-    pid, err := strconv.Atoi(string(b))
-    if err != nil {
-        log.Println("Invalid PID for reload:", err)
-        return
-    }
-    if err = syscall.Kill(pid, syscall.SIGUSR1); err != nil {
-        log.Println("Failed to reload server:", err)
-    } else {
-        log.Println("Server reloaded successfully")
-    }
+    return pid, nil
 }
 
 func (srv *server) signalHandler() {
